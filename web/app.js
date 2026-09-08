@@ -13,6 +13,8 @@
   const ASR_SEGMENT_MS = 800;
   const ASR_MIN_SEGMENT_BYTES = 600;
   const ASR_MAX_SEGMENT_BYTES = 3200;
+  // 蓝牙连接包含 GATT 建链和通知订阅，设备响应较慢时给予 30 秒。
+  const BLE_CONNECT_TIMEOUT_MS = 30000;
   const DOWNLOAD_STATUS_INTERVAL_MS = 300;
   const DOWNLOAD_TIMEOUT_ARM_INTERVAL_MS = 1000;
   const LOG_RENDER_INTERVAL_MS = 160;
@@ -733,7 +735,7 @@
         ? { acceptAllDevices: true, optionalServices: [UUIDS.service] }
         : { filters: [{ services: [UUIDS.service] }], optionalServices: [UUIDS.service] };
       const device = await navigator.bluetooth.requestDevice(options);
-      await withTimeout(openBleSession(device), 9000, t("bleConnectTimeout"));
+      await withTimeout(openBleSession(device), BLE_CONNECT_TIMEOUT_MS, t("bleConnectTimeout"));
       log("OK", t("deviceConnected"));
       setConnected(true);
       setBusy(false);
