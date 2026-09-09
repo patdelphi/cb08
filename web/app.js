@@ -21,14 +21,9 @@
 
   const I18N = {
     zh: {
-      appTitle: "NextProto-AI录音卡测试平台",
+      appTitle: "CB08 录音笔 BLE 测试平台",
       themeDay: "白天",
       themeNight: "夜间",
-      dictationLink: "API协议资料获取",
-      apiMaterialsLink: "API协议资料获取",
-      manualLink: "参数说明",
-      adminLink: "管理员入口",
-      secureChecking: "检测环境",
       bleDisconnected: "未连接",
       connect: "连接设备",
       connecting: "连接中...",
@@ -37,14 +32,6 @@
       deviceStatus: "设备状态",
       deviceStatusDesc: "AE20 服务，AE21 写入，AE22/AE23 通知。",
       safeSmoke: "读取项巡检",
-      supportTitle: "购买与技术支持",
-      supportDesc: "扫码购买团购产品，或添加微信技术支持咨询联调、转写和资料问题。",
-      supportWechat: "微信",
-      supportNote: "添加时请备注设备型号 QS668 和问题现象，方便快速排查。",
-      purchaseQrTitle: "微信扫码购买",
-      purchaseQrDesc: "团购二维码",
-      techQrTitle: "微信技术支持",
-      techQrDesc: "扫码咨询资料",
       battery: "电量",
       capacity: "容量",
       firmware: "固件",
@@ -118,8 +105,6 @@
       logDesc: "TX/RX 原始帧、解析结果、CRC 错误和超时。",
       clear: "清空",
       exportLog: "导出日志",
-      secureReady: "环境可用",
-      secureNeeded: "需 Chrome/HTTPS",
       connectedDevice: "已连接 {name}",
       charged: "充电中",
       recordStateRecording: "录音中",
@@ -231,14 +216,9 @@
       hexEvenLength: "HEX 长度必须为偶数",
       },
     en: {
-      appTitle: "NextProto AI Recording Card Test Platform",
+      appTitle: "CB08 Recorder BLE Test Platform",
       themeDay: "Day",
       themeNight: "Night",
-      dictationLink: "API Materials",
-      apiMaterialsLink: "API Materials",
-      manualLink: "Specs",
-      adminLink: "Admin",
-      secureChecking: "Checking",
       bleDisconnected: "Disconnected",
       connect: "Connect",
       connecting: "Connecting...",
@@ -247,14 +227,6 @@
       deviceStatus: "Device Status",
       deviceStatusDesc: "AE20 service, AE21 write, AE22/AE23 notifications.",
       safeSmoke: "Read Check",
-      supportTitle: "Purchase & Support",
-      supportDesc: "Scan to purchase via group buy, or add WeChat support for integration, transcription, and material questions.",
-      supportWechat: "WeChat",
-      supportNote: "Please include the QS668 model and issue details when adding support.",
-      purchaseQrTitle: "WeChat Purchase",
-      purchaseQrDesc: "Group Buy QR",
-      techQrTitle: "WeChat Support",
-      techQrDesc: "Scan for help",
       battery: "Battery",
       capacity: "Capacity",
       firmware: "Firmware",
@@ -328,8 +300,6 @@
       logDesc: "TX/RX raw frames, parsed results, CRC errors, and timeouts.",
       clear: "Clear",
       exportLog: "Export Log",
-      secureReady: "Ready",
-      secureNeeded: "Chrome/HTTPS Required",
       connectedDevice: "Connected {name}",
       charged: "Charging",
       recordStateRecording: "Recording",
@@ -541,14 +511,13 @@
     initPreferences();
     bindEvents();
     applyI18n();
-    updateSecureState();
     setConnected(false);
     log("INFO", msg("pageLoaded"));
   });
 
   function bindElements() {
     for (const id of [
-      "secureState", "bleState", "connectBtn", "compatConnectBtn", "disconnectBtn", "safeSmokeBtn",
+      "bleState", "connectBtn", "compatConnectBtn", "disconnectBtn", "safeSmokeBtn",
       "langZhBtn", "langEnBtn", "themeLightBtn", "themeDarkBtn",
       "batteryText", "capacityText", "firmwareText", "recordStateText", "recordTimeText", "gainText",
       "downloadName", "downloadOffset", "downloadBtn", "segDownloadBtn", "segStart", "segEnd",
@@ -655,7 +624,6 @@
     document.documentElement.dataset.locale = state.locale;
     if (persist) localStorage.setItem(LOCALE_KEY, state.locale);
     applyI18n();
-    updateSecureState();
     setConnected(state.connected);
   }
 
@@ -698,29 +666,61 @@
     return t(key, vars);
   }
 
+  // BLE 完整连接流程（gatt.connect → 服务发现 → 特征发现 → 通知订阅），带整体重试
+  // QS668 连上后可能立刻断开，需要把整个流程包在重试里
   async function openBleSession(device) {
     state.device = device;
-    device.addEventListener("gattserverdisconnected", onDisconnected);
-    state.server = await device.gatt.connect();
-    const service = await state.server.getPrimaryService(UUIDS.service);
-    state.writeChar = await service.getCharacteristic(UUIDS.write);
-    state.notifyChar = await service.getCharacteristic(UUIDS.notify);
-    state.notifyChar.addEventListener("characteristicvaluechanged", (event) => {
-      parsers.ae22.push(new Uint8Array(event.target.value.buffer));
-    });
-    await state.notifyChar.startNotifications();
-    log("OK", t("notifyReady", { name: "AE22" }));
+    let lastErr;
 
-    try {
-      state.keyNotifyChar = await service.getCharacteristic(UUIDS.keyNotify);
-      state.keyNotifyChar.addEventListener("characteristicvaluechanged", (event) => {
-        parsers.ae23.push(new Uint8Array(event.target.value.buffer));
-      });
-      await state.keyNotifyChar.startNotifications();
-      log("OK", t("notifyReady", { name: "AE23" }));
-    } catch (error) {
-      log("WARN", t("notifyUnavailable", { name: "AE23", error: error.message }));
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      try {
+        log("INFO", `BLE session attempt ${attempt}/5`);
+
+        // 每次重试前重新连接 GATT
+        if (device.gatt.connected) {
+          try { device.gatt.disconnect(); } catch (_) { /* 忽略 */ }
+        }
+        await sleep(300);
+        await device.gatt.connect();
+        state.server = device.gatt;
+
+        // GATT 稳定延时
+        await sleep(300);
+        const service = await state.server.getPrimaryService(UUIDS.service);
+
+        await sleep(100);
+        state.writeChar = await service.getCharacteristic(UUIDS.write);
+
+        await sleep(100);
+        state.notifyChar = await service.getCharacteristic(UUIDS.notify);
+        state.notifyChar.addEventListener("characteristicvaluechanged", (event) => {
+          parsers.ae22.push(new Uint8Array(event.target.value.buffer));
+        });
+        await state.notifyChar.startNotifications();
+        log("OK", t("notifyReady", { name: "AE22" }));
+
+        try {
+          await sleep(100);
+          state.keyNotifyChar = await service.getCharacteristic(UUIDS.keyNotify);
+          state.keyNotifyChar.addEventListener("characteristicvaluechanged", (event) => {
+            parsers.ae23.push(new Uint8Array(event.target.value.buffer));
+          });
+          await state.keyNotifyChar.startNotifications();
+          log("OK", t("notifyReady", { name: "AE23" }));
+        } catch (error) {
+          log("WARN", t("notifyUnavailable", { name: "AE23", error: error.message }));
+        }
+
+        // 全部成功后才注册断开监听
+        device.addEventListener("gattserverdisconnected", onDisconnected);
+        return; // 成功，退出重试
+      } catch (err) {
+        lastErr = err;
+        log("WARN", `Attempt ${attempt} failed: ${err.message}`);
+        if (attempt < 5) await sleep(500);
+      }
     }
+    throw lastErr;
   }
 
   async function connect(compatScan) {
@@ -735,7 +735,8 @@
         ? { acceptAllDevices: true, optionalServices: [UUIDS.service] }
         : { filters: [{ services: [UUIDS.service] }], optionalServices: [UUIDS.service] };
       const device = await navigator.bluetooth.requestDevice(options);
-      await withTimeout(openBleSession(device), BLE_CONNECT_TIMEOUT_MS, t("bleConnectTimeout"));
+      // 连接超时从 9s 延长到 60s，QS668 唤醒后 GATT 握手可能较慢
+      await withTimeout(openBleSession(device), 60000, t("bleConnectTimeout"));
       log("OK", t("deviceConnected"));
       setConnected(true);
       setBusy(false);
@@ -1476,13 +1477,6 @@
     els.connectBtn.disabled = busy || state.connected;
     els.compatConnectBtn.disabled = busy || state.connected;
     els.connectBtn.textContent = busy ? t("connecting") : t("connect");
-  }
-
-  function updateSecureState() {
-    const supported = Boolean(navigator.bluetooth);
-    const secure = window.isSecureContext;
-    els.secureState.textContent = supported && secure ? t("secureReady") : t("secureNeeded");
-    els.secureState.className = supported && secure ? "pill ok" : "pill warn";
   }
 
   function updateDownloadStatus(text) {
