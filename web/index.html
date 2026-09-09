@@ -8,6 +8,7 @@
     <meta http-equiv="Expires" content="0" />
     <title>CB08 录音笔 BLE 测试平台</title>
     <link rel="icon" href="data:," />
+    <link rel="manifest" href="./manifest.json" />
     <link rel="stylesheet" href="./styles.css?v=2026082002" />
   </head>
   <body>
@@ -95,6 +96,7 @@
           <table>
             <thead>
               <tr>
+                <th><input type="checkbox" id="selectAllFiles" /></th>
                 <th>#</th>
                 <th data-i18n="fileName">文件名</th>
                 <th data-i18n="durationTime">时长/时间</th>
@@ -103,9 +105,17 @@
               </tr>
             </thead>
             <tbody id="fileRows">
-              <tr><td colspan="5" class="empty" data-i18n="readFilesAfterConnect">连接后读取文件列表</td></tr>
+              <tr><td colspan="6" class="empty" data-i18n="readFilesAfterConnect">连接后读取文件列表</td></tr>
             </tbody>
           </table>
+          <div class="toolbar" style="margin-top:4px;">
+            <button id="batchDownloadBtn" disabled data-i18n="batchDownload">批量下载</button>
+            <select id="batchFormatSelect">
+              <option value="wav" selected>WAV</option>
+              <option value="opus">OPUS</option>
+              <option value="raw" data-i18n="rawName">原始</option>
+            </select>
+          </div>
         </div>
         <div class="danger-zone">
           <button id="deleteAllBtn" disabled data-i18n="deleteAll">删除全部文件</button>
@@ -129,11 +139,13 @@
             <button data-cmd="rtPause" disabled data-i18n="pause">暂停</button>
             <button data-cmd="rtResume" disabled data-i18n="resume">继续</button>
             <button data-cmd="rtStop" disabled data-i18n="rtStop">结束实时</button>
+            <label class="confirm"><input id="rtLivePlayToggle" type="checkbox" /><span data-i18n="livePlay">实时播放</span></label>
           </div>
           <div class="metrics compact">
             <div><span data-i18n="rtFile">实时文件</span><strong id="rtName">--</strong></div>
             <div><span data-i18n="receivedBytes">接收字节</span><strong id="rtBytes">0 B</strong></div>
           </div>
+          <canvas id="rtWaveform" width="600" height="60" style="width:100%;height:60px;display:block;margin:4px 0;"></canvas>
           <div class="transcribe-tools">
             <label class="confirm">
               <input id="rtTranscribeToggle" type="checkbox" />
@@ -156,7 +168,12 @@
           </div>
           <textarea id="rtTranscript" class="transcript-box" rows="7" data-i18n-placeholder="transcriptPlaceholder" placeholder="实时转写文字会显示在这里"></textarea>
           <div class="toolbar">
-            <button id="saveRealtimeBtn" disabled data-i18n="saveRealtime">保存实时音频原始数据</button>
+            <button id="saveRealtimeBtn" disabled data-i18n="saveRealtime">保存实时音频</button>
+            <select id="saveFormatSelect">
+              <option value="ogg" selected>Ogg/Opus (.ogg)</option>
+              <option value="wav">WAV (.wav)</option>
+              <option value="opus">原始 Opus (.opus)</option>
+            </select>
             <button id="clearTranscriptBtn" type="button" data-i18n="clearTranscript">清空转写</button>
           </div>
         </div>
@@ -236,6 +253,16 @@
           <div class="toolbar tight">
             <button id="clearLogBtn" data-i18n="clear">清空</button>
             <button id="exportLogBtn" data-i18n="exportLog">导出日志</button>
+            <select id="logFilter">
+              <option value="all" selected data-i18n="logFilterAll">全部</option>
+              <option value="TX">TX</option>
+              <option value="RX">RX</option>
+              <option value="OK">OK</option>
+              <option value="ERR">ERR</option>
+              <option value="WARN">WARN</option>
+              <option value="INFO">INFO</option>
+            </select>
+            <button id="exportCsvBtn" data-i18n="exportCsv">导出CSV</button>
           </div>
         </div>
         <pre id="log"></pre>
@@ -249,7 +276,14 @@
       </div>
     </template>
 
-    <script src="./opus-to-ogg.js?v=2026082002"></script>
-    <script src="./app.js?v=2026082005"></script>
+    <script src="./opus-to-ogg.js?v=2026090901"></script>
+    <script src="./opus-to-wav.js?v=2026090901"></script>
+    <script src="./app.js?v=2026090901"></script>
+    <script>
+      // 注册 Service Worker（仅 localhost 或 HTTPS）
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("./sw.js").catch(function () {});
+      }
+    </script>
   </body>
 </html>

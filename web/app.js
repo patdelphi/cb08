@@ -56,6 +56,7 @@
       actions: "操作",
       readFilesAfterConnect: "连接后读取文件列表",
       deleteAll: "删除全部文件",
+      batchDownload: "批量下载",
       allowDelete: "允许发送删除命令",
       realtimeTitle: "实时音频 / 转写",
       realtimeDesc: "直接接收设备推送的 OPUS 系码流，可分段提交后端 ASR 转成文字。",
@@ -63,9 +64,10 @@
       pause: "暂停",
       resume: "继续",
       rtStop: "结束实时",
+      livePlay: "实时播放",
       rtFile: "实时文件",
       receivedBytes: "接收字节",
-      saveRealtime: "保存实时音频原始数据",
+      saveRealtime: "保存实时音频",
       rtTranscribeToggle: "设备 OPUS 转写",
       asrLanguage: "识别语言",
       transcribeStatus: "转写状态",
@@ -105,6 +107,8 @@
       logDesc: "TX/RX 原始帧、解析结果、CRC 错误和超时。",
       clear: "清空",
       exportLog: "导出日志",
+      exportCsv: "导出CSV",
+      logFilterAll: "全部",
       connectedDevice: "已连接 {name}",
       charged: "充电中",
       recordStateRecording: "录音中",
@@ -251,6 +255,7 @@
       actions: "Actions",
       readFilesAfterConnect: "Connect first, then read the file list",
       deleteAll: "Delete All Files",
+      batchDownload: "Batch Download",
       allowDelete: "Allow delete commands",
       realtimeTitle: "Realtime Audio / Transcription",
       realtimeDesc: "Receive the OPUS-family stream from the device and submit segments to backend ASR.",
@@ -258,9 +263,10 @@
       pause: "Pause",
       resume: "Resume",
       rtStop: "Stop Realtime",
+      livePlay: "Live Play",
       rtFile: "Realtime File",
       receivedBytes: "Received Bytes",
-      saveRealtime: "Save Raw Realtime Audio",
+      saveRealtime: "Save Realtime Audio",
       rtTranscribeToggle: "Device OPUS Transcription",
       asrLanguage: "ASR Language",
       transcribeStatus: "Transcription Status",
@@ -300,6 +306,8 @@
       logDesc: "TX/RX raw frames, parsed results, CRC errors, and timeouts.",
       clear: "Clear",
       exportLog: "Export Log",
+      exportCsv: "Export CSV",
+      logFilterAll: "All",
       connectedDevice: "Connected {name}",
       charged: "Charging",
       recordStateRecording: "Recording",
@@ -433,6 +441,12 @@
       chunks: [],
       bytes: 0,
       active: false,
+      // 实时解码播放
+      decoder: null,
+      audioCtx: null,
+      pendingPackets: [],
+      decoding: false,
+      livePlay: false, // 是否实时播放
     },
     asr: {
       chunks: [],
@@ -522,10 +536,11 @@
       "batteryText", "capacityText", "firmwareText", "recordStateText", "recordTimeText", "gainText",
       "downloadName", "downloadOffset", "downloadBtn", "segDownloadBtn", "segStart", "segEnd",
       "downloadStatus", "fileRows", "abortImportBtn", "deleteAllBtn", "allowDelete",
-      "rtName", "rtBytes", "saveRealtimeBtn", "rtTranscribeToggle", "rtAsrLang",
+      "selectAllFiles", "batchDownloadBtn", "batchFormatSelect",
+      "rtName", "rtBytes", "saveRealtimeBtn", "saveFormatSelect", "rtTranscribeToggle", "rtAsrLang", "rtLivePlayToggle", "rtWaveform",
       "rtTranscribeStatus", "rtTranscript", "clearTranscriptBtn", "gainSelect", "setGainBtn",
       "rawType", "rawCmd", "rawParams", "sendRawCmdBtn", "rawFrame", "sendRawFrameBtn",
-      "selfTestBtn", "selfTestOutput", "clearLogBtn", "exportLogBtn", "log",
+      "selfTestBtn", "selfTestOutput", "clearLogBtn", "exportLogBtn", "exportCsvBtn", "logFilter", "log",
     ]) {
       els[id] = document.getElementById(id);
     }
@@ -557,6 +572,8 @@
     els.selfTestBtn.addEventListener("click", runSelfTest);
     els.clearLogBtn.addEventListener("click", clearLog);
     els.exportLogBtn.addEventListener("click", exportLog);
+    els.exportCsvBtn.addEventListener("click", exportLogCsv);
+    els.logFilter.addEventListener("change", renderLogNow);
 
     document.querySelectorAll("[data-cmd]").forEach((btn) => {
       btn.addEventListener("click", () => runNamedCommand(btn.dataset.cmd));
@@ -575,6 +592,54 @@
       if (action === "delete") deleteOneFile(file);
     });
 
+    // 全选/取消全选
+    els.selectAllFiles.addEventListener("change", (event) => {
+      const checked = event.target.checked;
+      els.fileRows.querySelectorAll("input[type=checkbox][data-file-index]").forEach((cb) => {
+        cb.checked = checked;
+      });
+      updateBatchButton();
+    });
+
+    // 批量下载
+    els.batchDownloadBtn.addEventListener("click", batchDownload);
+
+    // 单个 checkbox 变化时更新批量按钮状态
+    els.fileRows.addEventListener("change", (event) => {
+      if (event.target.type === "checkbox" && event.target.dataset.fileIndex !== undefined) {
+        updateBatchButton();
+      }
+    });
+
+  }
+
+  // 更新批量下载按钮状态
+  function updateBatchButton() {
+    const checked = els.fileRows.querySelectorAll("input[type=checkbox][data-file-index]:checked");
+    els.batchDownloadBtn.disabled = checked.length === 0 || !state.connected;
+  }
+
+  // 批量下载选中的文件
+  async function batchDownload() {
+    const checkboxes = els.fileRows.querySelectorAll("input[type=checkbox][data-file-index]:checked");
+    const indices = Array.from(checkboxes).map((cb) => Number(cb.dataset.fileIndex));
+    const format = els.batchFormatSelect.value;
+    if (indices.length === 0) return;
+
+    log("INFO", `批量下载 ${indices.length} 个文件（${format}）`);
+    for (let i = 0; i < indices.length; i++) {
+      const file = state.files[indices[i]];
+      if (!file) continue;
+      log("INFO", `下载 ${i + 1}/${indices.length}：${file.name}`);
+      if (format === "wav") {
+        await requestDownload(fileDownloadName(file, "wav"), 0, fallbackNames(file, "wav"));
+      } else if (format === "opus") {
+        await requestDownload(fileDownloadName(file, "opus"), 0, fallbackNames(file, "opus"));
+      } else {
+        await requestDownload(file.name, 0, [file.name]);
+      }
+    }
+    log("OK", `批量下载完成（${indices.length} 个文件）`);
   }
 
   function initPreferences() {
@@ -763,6 +828,7 @@
   function onDisconnected() {
     clearTimeout(state.listIdleTimer);
     if (state.download?.idleTimer) clearTimeout(state.download.idleTimer);
+    stopLiveDecoder(); // 清理实时解码器
     state.connected = false;
     state.server = null;
     state.writeChar = null;
@@ -930,21 +996,167 @@
   }
 
   async function startRealtime() {
-    state.realtime = { name: "", chunks: [], bytes: 0, active: true };
+    state.realtime = { name: "", chunks: [], bytes: 0, active: true, decoder: null, audioCtx: null, pendingPackets: [], decoding: false, livePlay: false };
     resetAsrBuffer();
     els.rtName.textContent = "--";
     els.rtBytes.textContent = "0 B";
     els.saveRealtimeBtn.disabled = true;
+    // 如果勾选了实时播放，初始化解码器
+    if (els.rtLivePlayToggle && els.rtLivePlayToggle.checked) {
+      initLiveDecoder();
+    }
     setTranscribeStatus(els.rtTranscribeToggle.checked ? t("asrCollecting", { bytes: "0 B" }) : t("asrIdle"));
     await sendCommand(1, 0);
   }
 
-  function saveRealtimeAudio() {
+  // 初始化实时 Opus 解码器 + AudioContext
+  function initLiveDecoder() {
+    try {
+      if (!window.AudioDecoder) {
+        log("WARN", "WebCodecs AudioDecoder 不可用，无法实时播放");
+        return;
+      }
+      state.realtime.audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+      state.realtime.decoder = new AudioDecoder({
+        output: function (frame) {
+          if (!frame || !state.realtime.livePlay) {
+            if (frame && frame.close) frame.close();
+            return;
+          }
+          // 将解码 PCM 喂入 AudioContext 播放
+          playDecodedFrame(frame);
+        },
+        error: function (e) {
+          log("WARN", `解码器错误：${e.message || e}`);
+        }
+      });
+      state.realtime.decoder.configure({
+        codec: "opus",
+        sampleRate: 16000,
+        numberOfChannels: 1,
+        description: new Uint8Array([0x4f, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64, 0x01, 0x01, 0x38, 0x01, 0x80, 0x3e, 0x00, 0x00, 0x00, 0x00, 0x00])
+      });
+      state.realtime.livePlay = true;
+      log("OK", "实时解码播放已启动（16kHz 单声道）");
+    } catch (e) {
+      log("WARN", `实时解码初始化失败：${e.message}`);
+    }
+  }
+
+  // 播放解码后的 AudioFrame
+  function playDecodedFrame(frame) {
+    try {
+      var ctx = state.realtime.audioCtx;
+      if (!ctx) return;
+      // frame.data 是 Float32 PCM
+      var pcm = new Float32Array(frame.data.byteLength / 4);
+      var dv = new DataView(frame.data);
+      for (var i = 0; i < pcm.length; i++) {
+        pcm[i] = dv.getFloat32(i * 4, true);
+      }
+      // 绘制波形
+      drawWaveform(pcm);
+      var buf = ctx.createBuffer(1, pcm.length, 16000);
+      buf.copyToChannel(pcm, 0);
+      var src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(ctx.destination);
+      src.start();
+      if (frame.close) frame.close();
+    } catch (e) {
+      // 静默处理播放错误
+    }
+  }
+
+  // 波形缓冲区（滚动显示最近 N 个采样点）
+  var waveformHistory = new Float32Array(600);
+
+  // 绘制实时波形
+  function drawWaveform(pcm) {
+    var canvas = els.rtWaveform;
+    if (!canvas) return;
+    var ctx2d = canvas.getContext("2d");
+    var w = canvas.width;
+    var h = canvas.height;
+
+    // 将 PCM 数据降采样到 canvas 宽度
+    var step = Math.max(1, Math.floor(pcm.length / w));
+    for (var i = 0; i < waveformHistory.length - 1; i++) {
+      waveformHistory[i] = waveformHistory[i + 1];
+    }
+    // 取最后一帧的最大幅度
+    var maxAmp = 0;
+    for (var i = 0; i < pcm.length; i += step) {
+      var amp = Math.abs(pcm[i]);
+      if (amp > maxAmp) maxAmp = amp;
+    }
+    waveformHistory[waveformHistory.length - 1] = maxAmp;
+
+    // 清空
+    ctx2d.fillStyle = document.body.getAttribute("data-theme") === "dark" ? "#1a1a2e" : "#f5f5f5";
+    ctx2d.fillRect(0, 0, w, h);
+
+    // 绘制中线
+    ctx2d.strokeStyle = document.body.getAttribute("data-theme") === "dark" ? "#333" : "#ccc";
+    ctx2d.lineWidth = 1;
+    ctx2d.beginPath();
+    ctx2d.moveTo(0, h / 2);
+    ctx2d.lineTo(w, h / 2);
+    ctx2d.stroke();
+
+    // 绘制波形柱
+    var isDark = document.body.getAttribute("data-theme") === "dark";
+    ctx2d.fillStyle = isDark ? "#4e9af1" : "#1976d2";
+    var barWidth = w / waveformHistory.length;
+    for (var i = 0; i < waveformHistory.length; i++) {
+      var amp = waveformHistory[i];
+      var barH = amp * h * 0.9;
+      ctx2d.fillRect(i * barWidth, (h - barH) / 2, Math.max(1, barWidth - 0.5), barH);
+    }
+  }
+
+  // 停止实时解码器
+  function stopLiveDecoder() {
+    state.realtime.livePlay = false;
+    try { if (state.realtime.decoder) state.realtime.decoder.close(); } catch (_) {}
+    try { if (state.realtime.audioCtx) state.realtime.audioCtx.close(); } catch (_) {}
+    state.realtime.decoder = null;
+    state.realtime.audioCtx = null;
+  }
+
+  async function saveRealtimeAudio() {
     if (!state.realtime.bytes) return;
-    // 合并所有 Opus 数据分片
     const raw = concatBytes(state.realtime.chunks);
     const baseName = state.realtime.name || `qs668-realtime-${timestampName()}`;
-    // 尝试包装为 Ogg/Opus（每包 40B），成功则可播放；失败则回退原始 .opus
+    const format = els.saveFormatSelect ? els.saveFormatSelect.value : "ogg";
+
+    if (format === "wav") {
+      // Opus → WAV（WebCodecs 解码）
+      try {
+        if (typeof wrapQs668RawOpusToWav !== "function") {
+          throw new Error("opus-to-wav.js 未加载");
+        }
+        log("INFO", `正在解码 Opus → WAV（${raw.length} 字节，${raw.length / 40} 包）...`);
+        const wav = await wrapQs668RawOpusToWav(raw);
+        const blob = new Blob([wav], { type: "audio/wav" });
+        downloadBlob(blob, `${baseName}.wav`);
+        log("OK", `保存 WAV ${formatBytes(wav.length)}（PCM 16-bit, ${SAMPLE_RATE_WAV || 16000}Hz）`);
+        return;
+      } catch (error) {
+        log("WARN", `WAV 转换失败，回退 Ogg：${error.message}`);
+      }
+      // 回退到 ogg
+    }
+
+    if (format === "opus") {
+      // 原始 Opus 字节流
+      const blob = new Blob([raw], { type: "application/octet-stream" });
+      downloadBlob(blob, `${baseName}.opus`);
+      log("OK", `保存原始 Opus ${formatBytes(raw.length)}（${raw.length / 40} 包）`);
+      return;
+    }
+
+    // 默认：Ogg/Opus
     try {
       if (raw.length % 40 === 0 && typeof wrapQs668RawOpus === "function") {
         const ogg = wrapQs668RawOpus(raw);
@@ -1059,12 +1271,24 @@
       state.realtime.bytes += body.length;
       els.rtBytes.textContent = formatBytes(state.realtime.bytes);
       els.saveRealtimeBtn.disabled = state.realtime.bytes === 0;
+      // 如果开启了实时播放，喂入解码器
+      if (state.realtime.livePlay && state.realtime.decoder) {
+        try {
+          state.realtime.decoder.decode(new EncodedAudioChunk({
+            type: "key",
+            data: new Uint8Array(body),
+            timestamp: (state.realtime.bytes / 40 - 1) * 20000, // 微秒
+            duration: 20000 // 20ms
+          }));
+        } catch (_) { /* 忽略单包解码错误 */ }
+      }
       queueAsrChunk(body);
     } else if (cmd === 4 && body.length >= 1) {
       const text = [t("realtimeContinue"), t("realtimePause"), t("realtimeStop")][body[0]] || t("unknown", { value: body[0] });
       log("OK", t("realtimeStatus", { text }));
       if (body[0] === 2) {
         state.realtime.active = false;
+        stopLiveDecoder();
         flushAsrSegment(true).catch((error) => {
           setTranscribeStatus(t("asrError", { message: error.message }));
         });
@@ -1321,12 +1545,13 @@
 
   function renderFiles() {
     if (!state.files.length) {
-      els.fileRows.innerHTML = `<tr><td colspan="5" class="empty">${escapeHtml(t("fileListEmpty"))}</td></tr>`;
+      els.fileRows.innerHTML = `<tr><td colspan="6" class="empty">${escapeHtml(t("fileListEmpty"))}</td></tr>`;
       return;
     }
     els.fileRows.innerHTML = state.files.map((file, index) => {
       const time = fileTimeText(file.durationOrTime);
       return `<tr>
+        <td><input type="checkbox" data-file-index="${index}" /></td>
         <td>${index + 1}</td>
         <td>${escapeHtml(file.name)}</td>
         <td>${escapeHtml(time)}</td>
@@ -1574,7 +1799,17 @@
 
   function renderLogNow() {
     if (!els.log) return;
-    els.log.textContent = state.logs.join("\n");
+    // 按过滤级别筛选日志
+    const filter = els.logFilter ? els.logFilter.value : "all";
+    let display = state.logs;
+    if (filter !== "all") {
+      display = state.logs.filter((line) => {
+        // 日志格式：[时间] LEVEL 消息，LEVEL 在时间后
+        const m = line.match(/^\[[^\]]+\]\s+(\w+)/);
+        return m && m[1] === filter;
+      });
+    }
+    els.log.textContent = display.join("\n");
     els.log.scrollTop = els.log.scrollHeight;
   }
 
@@ -1591,6 +1826,22 @@
     renderLogNow();
     const blob = new Blob([state.logs.join("\n")], { type: "text/plain;charset=utf-8" });
     downloadBlob(blob, `qs668-ble-log-${timestampName()}.txt`);
+  }
+
+  // 导出日志为 CSV（UTF-8 BOM）
+  function exportLogCsv() {
+    const rows = [["时间", "级别", "消息"].join(",")];
+    for (const line of state.logs) {
+      const m = line.match(/^\[([^\]]+)\]\s+(\w+)\s+(.*)$/);
+      if (m) {
+        // CSV 转义：消息中的逗号用双引号包裹
+        const msg = m[3].includes(",") ? `"${m[3].replace(/"/g, '""')}"` : m[3];
+        rows.push([m[1], m[2], msg].join(","));
+      }
+    }
+    const csv = "\uFEFF" + rows.join("\r\n"); // BOM + CRLF
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    downloadBlob(blob, `qs668-ble-log-${timestampName()}.csv`);
   }
 
   function parseHex(input) {
